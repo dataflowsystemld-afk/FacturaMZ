@@ -719,10 +719,12 @@ async function sb(tabela, metodo='GET', corpo=null, filtro=''){
   return res.status===204 ? null : res.json();
 }
 
-// Upsert helper — usa POST com Prefer:resolution=merge-duplicates
+// Upsert helper — especifica coluna de conflito via query param
 async function sbUpsert(tabela, corpo){
   const {url, key} = getCONFIG();
-  const res = await fetch(`${url}/rest/v1/${tabela}`, {
+  // Para a tabela configuracao, o campo único é "chave"
+  // on_conflict=chave diz ao Supabase para fazer UPDATE quando chave já existe
+  const res = await fetch(`${url}/rest/v1/${tabela}?on_conflict=chave`, {
     method: 'POST',
     headers: {
       'apikey':        key,
