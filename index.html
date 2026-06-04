@@ -701,15 +701,36 @@ function getCONFIG(){
 
 async function sb(tabela, metodo='GET', corpo=null, filtro=''){
   const {url, key} = getCONFIG();
+  let prefer = '';
+  if(metodo==='POST') prefer = 'return=representation';
+  if(metodo==='PATCH') prefer = 'return=representation';
+  if(metodo==='PUT')   prefer = 'resolution=merge-duplicates,return=representation';
   const res = await fetch(`${url}/rest/v1/${tabela}${filtro}`, {
     method: metodo,
     headers: {
-      'apikey': key,
+      'apikey':        key,
       'Authorization': `Bearer ${key}`,
-      'Content-Type': 'application/json',
-      'Prefer': metodo==='POST' ? 'return=representation' : ''
+      'Content-Type':  'application/json',
+      ...(prefer ? {'Prefer': prefer} : {})
     },
     body: corpo ? JSON.stringify(corpo) : undefined
+  });
+  if(!res.ok) throw new Error(await res.text());
+  return res.status===204 ? null : res.json();
+}
+
+// Upsert helper — usa POST com Prefer:resolution=merge-duplicates
+async function sbUpsert(tabela, corpo){
+  const {url, key} = getCONFIG();
+  const res = await fetch(`${url}/rest/v1/${tabela}`, {
+    method: 'POST',
+    headers: {
+      'apikey':        key,
+      'Authorization': `Bearer ${key}`,
+      'Content-Type':  'application/json',
+      'Prefer':        'resolution=merge-duplicates,return=representation'
+    },
+    body: JSON.stringify(corpo)
   });
   if(!res.ok) throw new Error(await res.text());
   return res.status===204 ? null : res.json();
@@ -1197,7 +1218,7 @@ async function gerarNumeroFactura(){
     const prefixo = cfg.prefixo_factura||'FT';
     const ano = new Date().getFullYear();
     const numero = `${prefixo}/${ano}/${String(num).padStart(4,'0')}`;
-    await sb('configuracao','PATCH',{valor:String(num+1)},'?chave=eq.proximo_numero');
+    await sbUpsert('configuracao',[{chave:'proximo_numero',valor:String(num+1)}]);
     return numero;
   } catch(e){ return 'FT/'+new Date().getFullYear()+'/0001'; }
 }
@@ -1358,19 +1379,17 @@ function renderConfiguracao(){
 
 async function saveConfiguracaoEmpresa(){
   const updates=[
-    ['empresa_nome',val('cfg-nome')],
-    ['empresa_nuit',val('cfg-nuit')],
-    ['empresa_endereco',val('cfg-endereco')],
-    ['empresa_cidade',val('cfg-cidade')],
-    ['empresa_telefone',val('cfg-telefone')],
-    ['empresa_email',val('cfg-email')],
+    {chave:'empresa_nome',  valor:val('cfg-nome')},
+    {chave:'empresa_nuit',  valor:val('cfg-nuit')},
+    {chave:'empresa_endereco', valor:val('cfg-endereco')},
+    {chave:'empresa_cidade',valor:val('cfg-cidade')},
+    {chave:'empresa_telefone',valor:val('cfg-telefone')},
+    {chave:'empresa_email', valor:val('cfg-email')},
   ];
   showSpinner();
   try {
-    for(const [chave,valor] of updates){
-      await sb('configuracao','PATCH',{valor},`?chave=eq.${chave}`);
-      G.cfg[chave]=valor;
-    }
+    await sbUpsert('configuracao', updates);
+    updates.forEach(u=>G.cfg[u.chave]=u.valor);
     el('sb-empresa-nome').textContent=G.cfg.empresa_nome||'Minha Empresa';
     toast('Dados da empresa guardados!','success');
   } catch(e){ toast('Erro: '+e.message,'error'); }
@@ -1379,16 +1398,14 @@ async function saveConfiguracaoEmpresa(){
 
 async function saveConfiguracaoFacturacao(){
   const updates=[
-    ['moeda',val('cfg-moeda')],
-    ['prefixo_factura',val('cfg-prefixo')],
-    ['proximo_numero',val('cfg-numero')],
+    {chave:'moeda',           valor:val('cfg-moeda')},
+    {chave:'prefixo_factura', valor:val('cfg-prefixo')},
+    {chave:'proximo_numero',  valor:val('cfg-numero')},
   ];
   showSpinner();
   try {
-    for(const [chave,valor] of updates){
-      await sb('configuracao','PATCH',{valor},`?chave=eq.${chave}`);
-      G.cfg[chave]=valor;
-    }
+    await sbUpsert('configuracao', updates);
+    updates.forEach(u=>G.cfg[u.chave]=u.valor);
     toast('Configuração de facturação guardada!','success');
   } catch(e){ toast('Erro: '+e.message,'error'); }
   hideSpinner();
@@ -1408,26 +1425,27 @@ async function saveIVA(){
   const nova = parseFloat(val('cfg-iva-nova'));
   if(!nova||isNaN(nova)){ toast('Indique a nova taxa de IVA.','warning'); return; }
   const motivo = val('cfg-iva-motivo');
-  const atual = G.cfg.iva_padrao||'16';
   showSpinner();
   try {
-    // Save new rate
-    await sb('configuracao','PATCH',{valor:String(nova)},'?chave=eq.iva_padrao');
+    // Guardar nova taxa
+    await sbUpsert('configuracao',[{chave:'iva_padrao',valor:String(nova)}]);
     G.cfg.iva_padrao = String(nova);
-    // History
+    // Histórico
     let n=1;
     while(G.cfg[`iva_hist_${n}_taxa`]) n++;
     const data = new Date().toISOString().slice(0,10);
-    await sb('configuracao','POST',{chave:`iva_hist_${n}_taxa`,valor:String(nova)});
-    await sb('configuracao','POST',{chave:`iva_hist_${n}_data`,valor:data});
-    if(motivo) await sb('configuracao','POST',{chave:`iva_hist_${n}_nota`,valor:motivo});
-    G.cfg[`iva_hist_${n}_taxa`]=String(nova);
-    G.cfg[`iva_hist_${n}_data`]=data;
-    if(motivo) G.cfg[`iva_hist_${n}_nota`]=motivo;
+    const histItems = [
+      {chave:`iva_hist_${n}_taxa`, valor:String(nova)},
+      {chave:`iva_hist_${n}_data`, valor:data},
+    ];
+    if(motivo) histItems.push({chave:`iva_hist_${n}_nota`, valor:motivo});
+    await sbUpsert('configuracao', histItems);
+    histItems.forEach(i=>G.cfg[i.chave]=i.valor);
 
     el('iva-pill').textContent=`IVA ${nova}%`;
     el('iva-big-display').textContent=`${nova}%`;
     el('cfg-iva-nova').value='';
+    el('cfg-iva-motivo').value='';
     el('iva-preview-txt').textContent='';
     renderIVAHistorico();
     toast('IVA actualizado para '+nova+'%','success');
